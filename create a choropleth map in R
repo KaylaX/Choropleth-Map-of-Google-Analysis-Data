@@ -1,0 +1,74 @@
+require(RGoogleAnalytics)
+token <- Auth(client.id,client.secret)
+save(token,file="./token_file")
+ValidateToken(token)
+query.list <- Init(start.date = "2008-1-1",
+                   end.date = "2008-6-30",
+                   dimensions = "ga:date,ga:pagePath,ga:hour,ga:medium, ga:city, ga:latitude, ga:longitude",
+                   metrics = "ga:sessions,ga:pageviews",
+                   max.results = 10000,
+                   sort = "-ga:date",
+                   table.id = ga.table) # this is your GA View ID. 
+ga.query <- QueryBuilder(query.list)
+ga.data <- GetReportData(ga.query, token, split_daywise = T)
+
+
+# This simply cleans the data
+ga.data$longitude <- as.numeric(ga.data$longitude)
+ga.data$latitude <- as.numeric(ga.data$latitude)
+ga.data <- ga.data[ga.data$latitude != 0,]
+
+# only get individual longitude/latitude cases.  
+long_lat <- unique(ga.data[,c('latitude', 'longitude')])
+
+reverseGeoCode <- function(latlng) {
+    latlngStr <-  gsub(' ','%20', paste(latlng, collapse=",")) # Collapse and Lon/Lat URL Parameters
+    library("RJSONIO") # Load Library
+    # Open Connection
+    connectStr <- paste('https://maps.google.com/maps/api/geocode/json?result_type=postal_code&latlng=',latlngStr, "&key=", client.key, sep="")
+    con <- url(connectStr)
+    data.json <- fromJSON(paste(readLines(con), collapse=""))
+    close(con)
+    # Filter  the received JSON
+    pc <- c()
+    if(data.json["status"]=="OK"){
+        pc <- data.json$results[[1]]$address_components[[1]]$long_name
+    } else {
+        pc <- NA
+    }
+    return(pc)
+}
+
+p <- c()
+for(i in 1:nrow(long_lat)){
+    p[i] <- reverseGeoCode(long_lat[i,])
+}
+paste("You converted", length(p), "geocodes to zipcodes.")
+
+long_lat$postal_code <- p
+
+for(i in 1:nrow(long_lat)){
+    long_lat$comb[i] <- paste(long_lat$longitude[i], long_lat$latitude[i], sep = ", ")
+}
+for(i in 1:nrow(ga.data)){
+    ga.data$comb[i] <- paste(ga.data$longitude[i], ga.data$latitude[i], sep = ", ")
+}
+
+for(i in 1:nrow(ga.data)){
+    if(ga.data$comb[i] %in% long_lat$comb) {
+        ga.data$postal_code[i] <- long_lat$postal_code[grep(ga.data$comb[i], long_lat$comb, fixed = TRUE)]
+        }
+}
+
+library(choroplethrZip)
+library(ggplot2)
+library(RColorBrewer)
+ga.data$value <- ga.data$sessions
+ga.data$region <- ga.data$postal_code
+choro_map <- aggregate(ga.data$value ~ ga.data$region, FUN = sum)
+names(choro_map) <- c("region", "value")
+choro = ZipChoropleth$new(choro_map)
+choro$title = "Sessions Jan 2007 - June 2007"
+choro$ggplot_scale = scale_fill_brewer(name="Sessions", palette=15, drop=FALSE)
+choro$set_zoom_zip(state_zoom="washington", county_zoom=NULL, msa_zoom=NULL, zip_zoom=NULL)
+choro$render()
